@@ -77,6 +77,7 @@ char langsinuse[4096];
 #define LANGAV_LATIN2W1250	0x0100 /* Compatible with both latin2 AND windows-1250 (eg: hungarian) */
 #define LANGAV_ISO8859_6	0x0200 /* arabic */
 #define LANGAV_GBK			0x1000 /* (Chinese) GBK encoding */
+#define LANGAV_UTF8			0x2000 /* utf-8 */
 
 typedef struct _langlist LangList;
 struct _langlist
@@ -89,6 +90,7 @@ struct _langlist
 /* MUST be alphabetized (first column) */
 static LangList langlist[] = {
 /*	{ "arabic",       "ara", LANGAV_ASCII|LANGAV_ISO8859_6 }, -- TODO: check if this has issues first! */
+	{ "belarussian-utf8",  "blr-u", LANGAV_ASCII|LANGAV_UTF8 },
 	{ "belarussian-w1251", "blr", LANGAV_ASCII|LANGAV_W1251 },
 	{ "catalan",      "cat", LANGAV_ASCII|LANGAV_LATIN1 },
 	{ "chinese",      "chi-j,chi-s,chi-t", LANGAV_GBK },
@@ -111,13 +113,16 @@ static LangList langlist[] = {
 	{ "polish",       "pol", LANGAV_ASCII|LANGAV_LATIN2 },
 	{ "polish-w1250", "pol-m", LANGAV_ASCII|LANGAV_W1250 },
 	{ "romanian",     "rum", LANGAV_ASCII|LANGAV_LATIN2W1250 },
+	{ "russian-utf8", "rus-u", LANGAV_ASCII|LANGAV_UTF8 },
 	{ "russian-w1251","rus", LANGAV_ASCII|LANGAV_W1251 },
 	{ "slovak",       "slo-m", LANGAV_ASCII|LANGAV_W1250 },
 	{ "spanish",      "spa", LANGAV_ASCII|LANGAV_LATIN1 },
 	{ "swedish",      "swe", LANGAV_ASCII|LANGAV_LATIN1 },
 	{ "swiss-german", "swg", LANGAV_ASCII|LANGAV_LATIN1 },
 	{ "turkish",      "tur", LANGAV_ASCII|LANGAV_ISO8859_9 },
+	{ "ukrainian-utf8",  "ukr-u", LANGAV_ASCII|LANGAV_UTF8 },
 	{ "ukrainian-w1251", "ukr", LANGAV_ASCII|LANGAV_W1251 },
+	{ "utf-8", "blr-u,rus-u,ukr-u", LANGAV_ASCII|LANGAV_W1251 },
 	{ "windows-1250", "cze-m,pol-m,rum,slo-m,hun",  LANGAV_ASCII|LANGAV_W1250 },
 	{ "windows-1251", "rus,ukr,blr", LANGAV_ASCII|LANGAV_W1251 },
 	{ NULL, NULL, 0 }
@@ -273,6 +278,21 @@ void charsys_addallowed(char *s)
 	}
 }
 
+void charsys_addallowedutf8(char *s)
+{
+	for (; *s; s++)
+	{
+		if ( *s <= 2)
+		{
+			config_error("INTERNAL ERROR: charsys_addallowedutf8() called for illegal characters: %s", s);
+#ifdef DEBUGMODE
+			abort();
+#endif
+		}
+		char_atribs[(unsigned char)*s] |= ALLOWN;
+	}
+}
+
 void charsys_addallowed_range(unsigned char from, unsigned char to)
 {
 	unsigned char i;
@@ -399,6 +419,8 @@ int x=0;
 		x++;
 	if ((langav & LANGAV_LATIN2W1250) && !(langav & LANGAV_LATIN2) && !(langav & LANGAV_W1250))
 	    x++;
+	if (langav & LANGAV_UTF8)
+		x++;
 	if (x > 1)
 	{
 		config_status("WARNING: set::allowed-nickchars: "
@@ -483,7 +505,7 @@ char tmp[512], *lang, *p;
 
 void charsys_add_language(char *name)
 {
-char latin1=0, latin2=0, w1250=0, w1251=0, chinese=0;
+char latin1=0, latin2=0, w1250=0, w1251=0, chinese=0, utf8=0;
 
 	/** Note: there could well be some characters missing in the lists below.
 	 *        While I've seen other altnernatives that just allow pretty much
@@ -508,6 +530,8 @@ char latin1=0, latin2=0, w1250=0, w1251=0, chinese=0;
 		w1251 = 1;
 	else if (!strcmp(name, "chinese") || !strcmp(name, "gbk"))
 		chinese = 1;
+	else if (!strcmp(name, "utf-8"))
+		utf8 = 1;
 	
 	/* INDIVIDUAL CHARSETS */
 
@@ -567,7 +591,7 @@ char latin1=0, latin2=0, w1250=0, w1251=0, chinese=0;
 	if (latin1 || !strcmp(name, "swedish"))
 	{
 		/* supplied by Tank */
-		/* ao, Ao, a", A", o", O" */ 
+		/* ao, Ao, a", A", o", O" */
 		charsys_addallowed("Â≈‰ƒˆ÷");
 	}
 	if (latin1 || !strcmp(name, "icelandic"))
@@ -597,7 +621,7 @@ char latin1=0, latin2=0, w1250=0, w1251=0, chinese=0;
 		/* 'S,' 's,' 'A^' 'A<' 'I^' 'T,' 'a^' 'a<' 'i^' 't,' */
 		charsys_addallowed("™∫¬√Œﬁ‚„Ó˛");
 	}
-	
+
 	if (latin2 || !strcmp(name, "polish"))
 	{
 		/* supplied by k4be */
@@ -629,7 +653,7 @@ char latin1=0, latin2=0, w1250=0, w1251=0, chinese=0;
 		 */
 		charsys_addallowed("¿¡¬√ƒ≈∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ‡·‚„‰ÂÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ®∏");
 	}
-	
+
 	if (w1251 || !strcmp(name, "belarussian-w1251"))
 	{
 		/* supplied by Bock (Samets Anton) & ss:
@@ -637,8 +661,8 @@ char latin1=0, latin2=0, w1250=0, w1251=0, chinese=0;
 		 * Corrected 01.11.2006 to more "correct" behavior by Bock
 		 */
 		charsys_addallowed("¿¡¬√ƒ≈®∆«≤… ÀÃÕŒœ–—“”°‘’÷◊ÿ€‹›ﬁﬂ‡·‚„‰Â∏ÊÁ≥ÈÍÎÏÌÓÔÒÚÛ¢Ùıˆ˜¯˚¸˝˛ˇ");
-	}	
-	
+	}
+
 	if (w1251 || !strcmp(name, "ukrainian-w1251"))
 	{
 		/* supplied by Anton Samets & ss:
@@ -646,9 +670,28 @@ char latin1=0, latin2=0, w1250=0, w1251=0, chinese=0;
 		 * Corrected 01.11.2006 to more "correct" behavior by core
 		 */
 		charsys_addallowed("¿¡¬√•ƒ≈™∆«»≤Ø… ÀÃÕŒœ–—“”‘’÷◊ÿŸ‹ﬁﬂ‡·‚„¥‰Â∫ÊÁË≥øÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘¸˛ˇ");
-	}	
+	}
 
-	/* [GREEK] */	
+	/* [UTF-8] */
+	if (utf8 || !strcmp(name, "russian-utf8"))
+	{
+		/* supplied by R4SAS */
+		charsys_addallowedutf8("–ê–ë–í–ì–î–ï–ñ–ó–ò–ô–ö–õ–ú–ù–û–ü–†–°–¢–£–§–•–¶–ß–®–©–™–´–¨–≠–Æ–Ø–∞–±–≤–≥–¥–µ–∂–∑–∏–π–∫–ª–º–Ω–æ–ø—Ä—Å—Ç—É—Ñ—Ö—Ü—á—à—â—ä—ã—å—ç—é—è–Å—ë");
+	}
+
+	if (utf8 || !strcmp(name, "belarussian-utf8"))
+	{
+		/* supplied by R4SAS */
+		charsys_addallowedutf8("–ê–ë–í–ì–î–ï–Å–ñ–ó–Ü–ô–ö–õ–ú–ù–û–ü–†–°–¢–£–é–§–•–¶–ß–®–´–¨–≠–Æ–Ø–∞–±–≤–≥–¥–µ—ë–∂–∑—ñ–π–∫–ª–º–Ω–æ–ø—Ä—Å—Ç—É—û—Ñ—Ö—Ü—á—à—ã—å—ç—é—è");
+	}
+
+	if (utf8 || !strcmp(name, "ukrainian-utf8"))
+	{
+		/* supplied by R4SAS */
+		charsys_addallowedutf8("–ê–ë–í–ì“ê–î–ï–Ñ–ñ–ó–ò–Ü–á–ô–ö–õ–ú–ù–û–ü–†–°–¢–£–§–•–¶–ß–®–©–¨–Æ–Ø–∞–±–≤–≥“ë–¥–µ—î–∂–∑–∏—ñ—ó–π–∫–ª–º–Ω–æ–ø—Ä—Å—Ç—É—Ñ—Ö—Ü—á—à—â—å—é—è");
+	}
+
+	/* [GREEK] */
 	if (!strcmp(name, "greek"))
 	{
 		/* supplied by GSF */
@@ -691,3 +734,4 @@ char latin1=0, latin2=0, w1250=0, w1251=0, chinese=0;
 		charsys_addmultibyterange(0xaa, 0xfe, 0x80, 0xa0); /* GBK/4 - upper half */
 	}
 }
+
