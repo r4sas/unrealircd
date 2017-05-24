@@ -6,7 +6,7 @@
 
 [Setup]
 AppName=UnrealIRCd 4
-AppVerName=UnrealIRCd 4.0.10
+AppVerName=UnrealIRCd 4.0.12
 AppPublisher=UnrealIRCd Team
 AppPublisherURL=https://www.unrealircd.org
 AppSupportURL=https://www.unrealircd.org
@@ -21,6 +21,8 @@ SolidCompression=true
 MinVersion=5.0
 OutputDir=.
 SourceDir=../../
+UninstallDisplayIcon={app}\UnrealIRCd.exe
+DisableWelcomePage=no
 
 ; !!! Make sure to update SSL validation (WizardForm.TasksList.Checked[9]) if tasks are added/removed !!!
 [Tasks]

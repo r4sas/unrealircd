@@ -1562,7 +1562,7 @@ CMD_FUNC(_m_umode)
 	char **p, *m;
 	aClient *acptr;
 	int what, setsnomask = 0;
-	long setflags = 0;
+	long oldumodes = 0;
 	/* (small note: keep 'what' as an int. -- Syzop). */
 	short rpterror = 0, umode_restrict_err = 0, chk_restrict = 0, modex_err = 0;
 
@@ -1602,7 +1602,7 @@ CMD_FUNC(_m_umode)
 	/* find flags already set for user */
 	for (i = 0; i <= Usermode_highest; i++)
 		if ((sptr->umodes & Usermode_Table[i].mode))
-			setflags |= Usermode_Table[i].mode;
+			oldumodes |= Usermode_Table[i].mode;
 
 	if (RESTRICT_USERMODES && MyClient(sptr) && !ValidatePermissionsForPath("self:restrictedumodes",sptr,NULL,NULL,NULL))
 		chk_restrict = 1;
@@ -1639,7 +1639,6 @@ CMD_FUNC(_m_umode)
 		  case ' ':
 		  case '\t':
 			  break;
-		  case 'r':
 		  case 's':
 			  if (what == MODE_DEL) {
 				if (parc >= 4 && sptr->user->snomask) {
@@ -1753,40 +1752,51 @@ CMD_FUNC(_m_umode)
 
 
 	/* -x translates to -xt (if applicable) */
-	if ((setflags & UMODE_HIDE) && !IsHidden(sptr))
+	if ((oldumodes & UMODE_HIDE) && !IsHidden(sptr))
 		sptr->umodes &= ~UMODE_SETHOST;
 
 	/* Vhost unset = unset some other data as well */
-	if ((setflags & UMODE_SETHOST) && !IsSetHost(sptr))
+	if ((oldumodes & UMODE_SETHOST) && !IsSetHost(sptr))
 	{
 		swhois_delete(sptr, "vhost", "*", &me, NULL);
 	}
 
 	/* +x or -t+x */
-	if ((IsHidden(sptr) && !(setflags & UMODE_HIDE)) ||
-	    ((setflags & UMODE_SETHOST) && !IsSetHost(sptr) && IsHidden(sptr)))
+	if ((IsHidden(sptr) && !(oldumodes & UMODE_HIDE)) ||
+	    ((oldumodes & UMODE_SETHOST) && !IsSetHost(sptr) && IsHidden(sptr)))
 	{
-		safefree(sptr->user->virthost);
-		sptr->user->virthost = strdup(sptr->user->cloakedhost);
 		if (!dontspread)
 			sendto_server(cptr, PROTO_VHP, 0, ":%s SETHOST :%s",
 				sptr->name, sptr->user->virthost);
+
 		if (UHOST_ALLOWED == UHALLOW_REJOIN)
 		{
-			/* LOL, this is ugly ;) */
-			sptr->umodes &= ~UMODE_HIDE;
+			/* Damn, this is ugly: we have to restore umodes to old state,
+			 * do the PART and then set umodes to the new modes again.
+			 */
+			long newmodes = sptr->umodes;
+			sptr->umodes = oldumodes;
 			rejoin_leave(sptr);
+			sptr->umodes = newmodes;
+		}
+
+		safefree(sptr->user->virthost);
+		sptr->user->virthost = strdup(sptr->user->cloakedhost);
+
+		if (UHOST_ALLOWED == UHALLOW_REJOIN)
+		{
 			sptr->umodes |= UMODE_HIDE;
 			rejoin_joinandmode(sptr);
 			if (MyClient(sptr))
 				sptr->local->since += 7; /* Add fake lag */
 		}
+
 		if (MyClient(sptr))
 			sendto_one(sptr, err_str(RPL_HOSTHIDDEN), me.name, sptr->name, sptr->user->virthost);
 	}
 
 	/* -x */
-	if (!IsHidden(sptr) && (setflags & UMODE_HIDE))
+	if (!IsHidden(sptr) && (oldumodes & UMODE_HIDE))
 	{
 		if (UHOST_ALLOWED == UHALLOW_REJOIN)
 		{
@@ -1816,36 +1826,36 @@ CMD_FUNC(_m_umode)
 	 * O.K. The above code just does normal access flag checks. This
 	 * only changes the operflag access level.  -Cabal95
 	 */
-	if ((setflags & UMODE_OPER) && !IsOper(sptr) && MyConnect(sptr))
+	if ((oldumodes & UMODE_OPER) && !IsOper(sptr) && MyConnect(sptr))
 	{
 		list_del(&sptr->special_node);
 		remove_oper_privileges(sptr, 0);
 		RunHook2(HOOKTYPE_LOCAL_OPER, sptr, 0);
 	}
 
-	if (!(setflags & UMODE_OPER) && IsOper(sptr))
+	if (!(oldumodes & UMODE_OPER) && IsOper(sptr))
 		IRCstats.operators++;
 
 	/* deal with opercounts and stuff */
-	if ((setflags & UMODE_OPER) && !IsOper(sptr))
+	if ((oldumodes & UMODE_OPER) && !IsOper(sptr))
 	{
 		IRCstats.operators--;
 		VERIFY_OPERCOUNT(sptr, "umode1");
 	} else /* YES this 'else' must be here, otherwise we can decrease twice. fixes opercount bug. */
-	if (!(setflags & UMODE_HIDEOPER) && IsHideOper(sptr))
+	if (!(oldumodes & UMODE_HIDEOPER) && IsHideOper(sptr))
 	{
 		IRCstats.operators--;
 		VERIFY_OPERCOUNT(sptr, "umode2");
 	}
 	/* end of dealing with opercounts */
 
-	if ((setflags & UMODE_HIDEOPER) && !IsHideOper(sptr))
+	if ((oldumodes & UMODE_HIDEOPER) && !IsHideOper(sptr))
 	{
 		IRCstats.operators++;
 	}
-	if (!(setflags & UMODE_INVISIBLE) && IsInvisible(sptr))
+	if (!(oldumodes & UMODE_INVISIBLE) && IsInvisible(sptr))
 		IRCstats.invisible++;
-	if ((setflags & UMODE_INVISIBLE) && !IsInvisible(sptr))
+	if ((oldumodes & UMODE_INVISIBLE) && !IsInvisible(sptr))
 		IRCstats.invisible--;
 
 	if (MyConnect(sptr) && !IsOper(sptr))
@@ -1855,10 +1865,10 @@ CMD_FUNC(_m_umode)
 	 * compare new flags with old flags and send string which
 	 * will cause servers to update correctly.
 	 */
-	if (setflags != sptr->umodes)
-		RunHook3(HOOKTYPE_UMODE_CHANGE, sptr, setflags, sptr->umodes);
+	if (oldumodes != sptr->umodes)
+		RunHook3(HOOKTYPE_UMODE_CHANGE, sptr, oldumodes, sptr->umodes);
 	if (dontspread == 0)
-		send_umode_out(cptr, sptr, setflags);
+		send_umode_out(cptr, sptr, oldumodes);
 
 	if (MyConnect(sptr) && setsnomask != sptr->user->snomask)
 		sendto_one(sptr, rpl_str(RPL_SNOMASK),

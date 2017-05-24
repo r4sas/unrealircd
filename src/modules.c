@@ -131,6 +131,7 @@ void (*send_moddata_client)(aClient *srv, aClient *acptr);
 void (*send_moddata_channel)(aClient *srv, aChannel *chptr);
 void (*send_moddata_members)(aClient *srv);
 void (*broadcast_moddata_client)(aClient *acptr);
+int (*match_user)(char *rmask, aClient *acptr, int options);
 
 static const EfunctionsList efunction_table[MAXEFUNCTIONS] = {
 /* 00 */	{NULL, NULL},
@@ -186,7 +187,8 @@ static const EfunctionsList efunction_table[MAXEFUNCTIONS] = {
 /* 50 */	{"send_moddata_channel", (void *)&send_moddata_channel},
 /* 51 */	{"send_moddata_members", (void *)&send_moddata_members},
 /* 52 */	{"broadcast_moddata_client", (void *)&broadcast_moddata_client},
-/* 53 */	{NULL, NULL}
+/* 53 */	{"match_user", (void *)&match_user},
+/* 54 */	{NULL, NULL}
 };
 
 #ifdef UNDERSCORE
@@ -865,9 +867,6 @@ vFP Module_SymX(char *name, Module **mptr)
 	return NULL;
 }
 
-
-
-
 void module_loadall(void)
 {
 	iFP	fp;
@@ -1010,13 +1009,13 @@ CMD_FUNC(m_module)
 
 		tmp[0] = '\0';
 		if (mi->flags & MODFLAG_DELAYED)
-			strncat(tmp, "[Unloading] ", sizeof(tmp)-strlen(tmp)-1);
+			strlcat(tmp, "[Unloading] ", sizeof(tmp));
 		if (mi->options & MOD_OPT_PERM_RELOADABLE)
-			strncat(tmp, "[PERM-BUT-RELOADABLE] ", sizeof(tmp)-strlen(tmp)-1);
+			strlcat(tmp, "[PERM-BUT-RELOADABLE] ", sizeof(tmp));
 		if (mi->options & MOD_OPT_PERM)
-			strncat(tmp, "[PERM] ", sizeof(tmp)-strlen(tmp)-1);
+			strlcat(tmp, "[PERM] ", sizeof(tmp));
 		if (!(mi->options & MOD_OPT_OFFICIAL))
-			strncat(tmp, "[3RD] ", sizeof(tmp)-strlen(tmp)-1);
+			strlcat(tmp, "[3RD] ", sizeof(tmp));
 		if (!ValidatePermissionsForPath("server:module",sptr,NULL,NULL,NULL))
 			sendto_one(sptr, ":%s NOTICE %s :*** %s (%s)%s", me.name, sptr->name,
 				mi->header->name, mi->header->description,

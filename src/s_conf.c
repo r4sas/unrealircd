@@ -257,6 +257,9 @@ extern void charsys_reset_pretest(void);
 int charsys_postconftest(void);
 void charsys_finish(void);
 int reloadable_perm_module_unloaded(void);
+void special_delayed_unloading(void);
+
+int ssl_tests(void);
 
 /* Conf sub-sub-functions */
 void test_sslblock(ConfigFile *conf, ConfigEntry *cep, int *totalerrors);
@@ -312,6 +315,8 @@ MODVAR int			config_error_flag = 0;
 int			config_verbose = 0;
 
 MODVAR int need_34_upgrade = 0;
+int have_ssl_listeners = 0;
+char *port_6667_ip = NULL;
 
 void add_include(const char *filename, const char *included_from, int included_from_line);
 #ifdef USE_LIBCURL
@@ -583,7 +588,8 @@ void chmode_str(struct ChMode *modes, char *mbuf, char *pbuf, size_t mbuf_size, 
 	aCtab *tab;
 	int i;
 
-        if (!(mbuf_size && pbuf_size)) return;
+	if (!(mbuf_size && pbuf_size))
+		return;
 
 	*pbuf = 0;
 	*mbuf++ = '+';
@@ -592,13 +598,15 @@ void chmode_str(struct ChMode *modes, char *mbuf, char *pbuf, size_t mbuf_size, 
 	{
 		if (modes->mode & tab->mode)
 		{
-			if (!tab->parameters) {
+			if (!tab->parameters)
+			{
 				*mbuf++ = tab->flag;
-				if (!--mbuf_size) {
+				if (!--mbuf_size)
+				{
 					*--mbuf=0;
 					break;
 				}
-                        }
+			}
 		}
 	}
 	for (i=0; i <= Channelmode_highest; i++)
@@ -608,20 +616,19 @@ void chmode_str(struct ChMode *modes, char *mbuf, char *pbuf, size_t mbuf_size, 
 
 		if (modes->extmodes & Channelmode_Table[i].mode)
 		{
-			if (mbuf_size) {
+			if (mbuf_size)
+			{
 				*mbuf++ = Channelmode_Table[i].flag;
-				if (!--mbuf_size) {
+				if (!--mbuf_size)
+				{
 					*--mbuf=0;
 					break;
 				}
 			}
 			if (Channelmode_Table[i].paracount)
 			{
-				strncat(pbuf, modes->extparams[i], pbuf_size-1);
-				pbuf_size-=strlen(modes->extparams[i]);
-				if (!pbuf_size) break;
-				strncat(pbuf, " ", pbuf_size-1);
-				if (!--pbuf_size) break;
+				strlcat(pbuf, modes->extparams[i], pbuf_size);
+				strlcat(pbuf, " ", pbuf_size);
 			}
 		}
 	}
@@ -1402,6 +1409,7 @@ void	free_iConf(aConfiguration *i)
 	safefree(i->network.x_prefix_quit);
 	safefree(i->network.x_helpchan);
 	safefree(i->network.x_stats_server);
+	safefree(i->network.x_sasl_server);
 	safefree(i->spamfilter_ban_reason);
 	safefree(i->spamfilter_virus_help_channel);
 	safefree(i->spamexcept_line);
@@ -1606,6 +1614,27 @@ void upgrade_conf_to_34(void)
 	/* TODO: win32 may require a different error */
 }
 
+/** Reset config tests (before running the config test) */
+void config_test_reset(void)
+{
+	charsys_reset_pretest();
+}
+
+/** Run config test and all post config tests. */
+int config_test_all(void)
+{
+	if ((config_test() < 0) || (callbacks_check() < 0) || (efunctions_check() < 0) ||
+	    (charsys_postconftest() < 0) || ssl_used_in_config_but_unavail() ||
+	    reloadable_perm_module_unloaded() || !ssl_tests())
+	{
+		return 0;
+	}
+
+	special_delayed_unloading();
+
+	return 1;
+}
+
 int	init_conf(char *rootconf, int rehash)
 {
 	char *old_pid_file = NULL;
@@ -1631,9 +1660,8 @@ int	init_conf(char *rootconf, int rehash)
 	add_include(rootconf, "[thin air]", -1);
 	if (load_conf(rootconf, rootconf) > 0)
 	{
-		charsys_reset_pretest();
-		if ((config_test() < 0) || (callbacks_check() < 0) || (efunctions_check() < 0) ||
-		    (charsys_postconftest() < 0) || ssl_used_in_config_but_unavail() || reloadable_perm_module_unloaded())
+		config_test_reset();
+		if (!config_test_all())
 		{
 			config_error("IRCd configuration failed to pass testing");
 #ifdef _WIN32
@@ -2089,6 +2117,7 @@ void	config_rehash()
 		safefree(deny_channel_ptr->reason);
 		safefree(deny_channel_ptr->class);
 		DelListItem(deny_channel_ptr, conf_deny_channel);
+		unreal_delete_masks(deny_channel_ptr->mask);
 		MyFree(deny_channel_ptr);
 	}
 
@@ -2098,6 +2127,7 @@ void	config_rehash()
 		safefree(allow_channel_ptr->channel);
 		safefree(allow_channel_ptr->class);
 		DelListItem(allow_channel_ptr, conf_allow_channel);
+		unreal_delete_masks(allow_channel_ptr->mask);
 		MyFree(allow_channel_ptr);
 	}
 	for (allow_dcc_ptr = conf_allow_dcc; allow_dcc_ptr; allow_dcc_ptr = (ConfigItem_allow_dcc *)next)
@@ -2721,7 +2751,6 @@ int	AllowClient(aClient *cptr, struct hostent *hp, char *sockhost, char *usernam
 		{
 			hname = hp->h_name;
 			strlcpy(fullname, hname, sizeof(fullname));
-			add_local_domain(fullname, HOSTLEN - strlen(fullname));
 			Debug((DEBUG_DNS, "a_il: %s->%s", sockhost, fullname));
 			if (index(aconf->hostname, '@'))
 			{
@@ -2847,20 +2876,34 @@ ConfigItem_deny_channel *Find_channel_allowed(aClient *cptr, char *name)
 
 	for (dchannel = conf_deny_channel; dchannel; dchannel = (ConfigItem_deny_channel *)dchannel->next)
 	{
-		if (!match(dchannel->channel, name) && (dchannel->class ? !strcmp(cptr->local->class->name, dchannel->class) : 1))
-			break;
+		if (!match(dchannel->channel, name))
+		{
+			if (dchannel->class && strcmp(cptr->local->class->name, dchannel->class))
+				continue;
+			if (dchannel->mask && !unreal_mask_match(cptr, dchannel->mask))
+				continue;
+			break; /* MATCH deny channel { } */
+		}
 	}
+
 	if (dchannel)
 	{
+		/* Check exceptions... ('allow channel') */
 		for (achannel = conf_allow_channel; achannel; achannel = (ConfigItem_allow_channel *)achannel->next)
 		{
-			if (!match(achannel->channel, name) && (achannel->class ? !strcmp(cptr->local->class->name, achannel->class) : 1))
-				break;
+			if (!match(achannel->channel, name))
+			{
+				if (achannel->class && strcmp(cptr->local->class->name, achannel->class))
+					continue;
+				if (achannel->mask && !unreal_mask_match(cptr, achannel->mask))
+					continue;
+				break; /* MATCH allow channel { } */
+			}
 		}
 		if (achannel)
-			return NULL;
+			return NULL; /* Matches an 'allow channel' - so not forbidden */
 		else
-			return (dchannel);
+			return dchannel;
 	}
 	return NULL;
 }
@@ -4671,7 +4714,8 @@ int	_test_listen(ConfigFile *conf, ConfigEntry *ce)
 	ConfigEntry *cep;
 	ConfigEntry *cepp;
 	int errors = 0;
-	char has_ip = 0, has_port = 0, has_options = 0;
+	char has_ip = 0, has_port = 0, has_options = 0, port_6667 = 0;
+	char *ip = NULL;
 
 	if (ce->ce_vardata)
 	{
@@ -4717,6 +4761,8 @@ int	_test_listen(ConfigFile *conf, ConfigEntry *ce)
 					errors++;
 					continue;
 				}
+				if (!strcmp(cepp->ce_varname, "ssl"))
+					have_ssl_listeners = 1; /* for ssl config test */
 			}
 		}
 		else
@@ -4742,6 +4788,7 @@ int	_test_listen(ConfigFile *conf, ConfigEntry *ce)
 					cep->ce_fileptr->cf_filename, cep->ce_varlinenum, cep->ce_vardata);
 				return 1;
 			}
+			ip = cep->ce_vardata;
 		} else
 		if (!strcmp(cep->ce_varname, "host"))
 		{
@@ -4788,6 +4835,9 @@ int	_test_listen(ConfigFile *conf, ConfigEntry *ce)
 					return 1;
 				}
 			}
+
+			if ((6667 >= start) && (6667 <= end))
+				port_6667 = 1;
 		} else
 		{
 			config_error_unknown(cep->ce_fileptr->cf_filename, cep->ce_varlinenum,
@@ -4810,6 +4860,9 @@ int	_test_listen(ConfigFile *conf, ConfigEntry *ce)
 			ce->ce_fileptr->cf_filename, ce->ce_varlinenum);
 		errors++;
 	}
+
+	if (port_6667)
+		safestrdup(port_6667_ip, ip);
 
 	requiredstuff.conf_listen = 1;
 	return errors;
@@ -5149,12 +5202,15 @@ int	_conf_allow_channel(ConfigFile *conf, ConfigEntry *ce)
 	ConfigItem_allow_channel 	*allow = NULL;
 	ConfigEntry 	    	*cep;
 	char *class = NULL;
+	ConfigEntry *mask = NULL;
 
 	/* First, search for ::class, if any */
 	for (cep = ce->ce_entries; cep; cep = cep->ce_next)
 	{
 		if (!strcmp(cep->ce_varname, "class"))
 			class = cep->ce_vardata;
+		else if (!strcmp(cep->ce_varname, "mask"))
+			mask = cep;
 	}
 
 	for (cep = ce->ce_entries; cep; cep = cep->ce_next)
@@ -5166,6 +5222,8 @@ int	_conf_allow_channel(ConfigFile *conf, ConfigEntry *ce)
 			safestrdup(allow->channel, cep->ce_vardata);
 			if (class)
 				safestrdup(allow->class, class);
+			if (mask)
+				unreal_add_masks(&allow->mask, mask);
 			AddListItem(allow, conf_allow_channel);
 		}
 	}
@@ -5199,6 +5257,9 @@ int	_test_allow_channel(ConfigFile *conf, ConfigEntry *ce)
 				continue;
 			}
 			has_class = 1;
+		}
+		else if (!strcmp(cep->ce_varname, "mask"))
+		{
 		}
 		else
 		{
@@ -7511,6 +7572,16 @@ int	_conf_set(ConfigFile *conf, ConfigEntry *ce)
 		{
 			tempiConf.default_ipv6_clone_mask = atoi(cep->ce_vardata);
 		}
+		else if (!strcmp(cep->ce_varname, "hide-list")) {
+			for (cepp = cep->ce_entries; cepp; cepp = cepp->ce_next)
+			{
+				if (!strcmp(cepp->ce_varname, "deny-channel"))
+				{
+					tempiConf.hide_list = 1;
+					/* if we would expand this later then change this to a bitmask or struct or whatever */
+				}
+			}
+		}
 		else
 		{
 			int value;
@@ -8371,6 +8442,21 @@ int	_test_set(ConfigFile *conf, ConfigEntry *ce)
 					    cep->ce_fileptr->cf_filename, cep->ce_varlinenum);
 			}
 		}
+		else if (!strcmp(cep->ce_varname, "hide-list")) {
+			for (cepp = cep->ce_entries; cepp; cepp = cepp->ce_next)
+			{
+				if (!strcmp(cepp->ce_varname, "deny-channel"))
+				{
+				} else
+				{
+					config_error_unknown(cepp->ce_fileptr->cf_filename,
+						cepp->ce_varlinenum, "set::hide-list",
+						cepp->ce_varname);
+					errors++;
+					continue;
+				}
+			}
+		}
 		else
 		{
 			int used = 0;
@@ -8976,6 +9062,10 @@ int	_conf_deny_channel(ConfigFile *conf, ConfigEntry *ce)
 		{
 			safestrdup(deny->class, cep->ce_vardata);
 		}
+		else if (!strcmp(cep->ce_varname, "mask"))
+		{
+			unreal_add_masks(&deny->mask, cep);
+		}
 	}
 	AddListItem(deny, conf_deny_channel);
 	return 0;
@@ -9164,6 +9254,9 @@ int     _test_deny(ConfigFile *conf, ConfigEntry *ce)
 					continue;
 				}
 				has_class = 1;
+			}
+			else if (!strcmp(cep->ce_varname, "mask"))
+			{
 			}
 			else
 			{
@@ -9509,6 +9602,7 @@ int	rehash_internal(aClient *cptr, aClient *sptr, int sig)
 	unload_all_unused_snomasks();
 	unload_all_unused_umodes();
 	unload_all_unused_extcmodes();
+	// unload_all_unused_moddata(); -- this will crash
 	extcmodes_check_for_changes();
 	loop.ircd_rehashing = 0;
 	remote_rehash_client = NULL;
@@ -9888,15 +9982,28 @@ int ssl_used_in_config_but_unavail(void)
 	return (errors ? 1 : 0);
 }
 
+int ssl_tests(void)
+{
+	if (have_ssl_listeners == 0)
+	{
+		config_warn("Your server is not listening on any SSL ports.");
+		config_warn("Add this to your unrealircd.conf: listen { ip %s; port 6697; options { ssl; }; };",
+		            port_6667_ip ? port_6667_ip : "*");
+		config_warn("See https://www.unrealircd.org/docs/FAQ#Your_server_is_not_listening_on_any_SSL_ports");
+	}
+
+	return 1; /* always return success for now */
+}
+
 /** Check if the user attempts to unload (eg: by commenting out) a module
  * that is currently loaded and is tagged as MOD_OPT_PERM_RELOADABLE
  * (in other words: a module that allows re-loading but not un-loading)
  */
 int reloadable_perm_module_unloaded(void)
 {
-Module *m, *m2;
-extern Module *Modules;
-int ret = 0;
+    Module *m, *m2;
+    extern Module *Modules;
+    int ret = 0;
 
 	for (m = Modules; m; m = m->next)
 	{
@@ -9917,5 +10024,34 @@ int ret = 0;
 			}
 		}
 	}
+
 	return ret;
+}
+
+extern int module_has_moddata(Module *mod);
+
+/** Special hack for unloading modules with moddata */
+void special_delayed_unloading(void)
+{
+    Module *m, *m2;
+    extern Module *Modules;
+
+	for (m = Modules; m; m = m->next)
+	{
+	    if ((m->flags & MODFLAG_LOADED) && module_has_moddata(m) && !(m->options & MOD_OPT_PERM) && !(m->options & MOD_OPT_PERM_RELOADABLE))
+		{
+			int found = 0;
+			for (m2 = Modules; m2; m2 = m2->next)
+			{
+				if ((m != m2) && !strcmp(m->header->name, m2->header->name))
+					found = 1;
+			}
+			if (!found)
+			{
+			    config_warn("Delaying module unloading of '%s' due to moddata", m->header->name);
+			    m->flags |= MODFLAG_DELAYED;
+			    EventAddEx(NULL, "e_unload_module_delayed", 5, 1, e_unload_module_delayed, m->header->name);
+			}
+		}
+	}
 }

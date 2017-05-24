@@ -166,33 +166,6 @@ void close_connections(void)
 }
 
 /*
-** add_local_domain()
-** Add the domain to hostname, if it is missing
-** (as suggested by eps@TOASTER.SFSU.EDU)
-*/
-
-void add_local_domain(char *hname, int size)
-{
-#if 0
-	/* try to fix up unqualified names */
-	if (!index(hname, '.'))
-	{
-		if (!(ircd_res.options & RES_INIT))
-		{
-			Debug((DEBUG_DNS, "res_init()"));
-			ircd_res_init();
-		}
-		if (ircd_res.defdname[0])
-		{
-			(void)strncat(hname, ".", size - 1);
-			(void)strncat(hname, ircd_res.defdname, size - 2);
-		}
-	}
-#endif
-	return;
-}
-
-/*
 ** Cannot use perror() within daemon. stderr is closed in
 ** ircd and cannot be used. And, worse yet, it might have
 ** been reassigned to a normal connection...
@@ -463,6 +436,7 @@ void close_listener(ConfigItem_listen *listener)
 			listener->ipv6 ? "IPv6" : "IPv4",
 			listener->options & LISTENER_SSL ? " (SSL)" : "");
 		fd_close(listener->fd);
+		--OpenFiles;
 	}
 
 	listener->options &= ~LISTENER_BOUND;
@@ -1065,7 +1039,7 @@ char *getpeerip(aClient *acptr, int fd, int *port)
  * The client is added to the linked list of clients but isnt added to any
  * hash tables yuet since it doesnt have a name.
  */
-aClient *add_connection(ConfigItem_listen *cptr, int fd)
+aClient *add_connection(ConfigItem_listen *listener, int fd)
 {
 	aClient *acptr, *acptr2;
 	ConfigItem_ban *bconf;
@@ -1075,8 +1049,8 @@ aClient *add_connection(ConfigItem_listen *cptr, int fd)
 	
 	acptr = make_client(NULL, &me);
 
-	/* If listener (cptr) is IPv6 then mark client (acptr) as IPv6 */
-	if (cptr->ipv6)
+	/* If listener is IPv6 then mark client (acptr) as IPv6 */
+	if (listener->ipv6)
 		SetIPV6(acptr);
 
 	ip = getpeerip(acptr, fd, &port);
@@ -1167,7 +1141,7 @@ add_con_refuse:
 	}
 
 	acptr->fd = fd;
-	acptr->local->listener = cptr;
+	acptr->local->listener = listener;
 	if (acptr->local->listener != NULL)
 		acptr->local->listener->clients++;
 	add_client_to_list(acptr);
@@ -1177,9 +1151,9 @@ add_con_refuse:
 
 	list_add(&acptr->lclient_node, &unknown_list);
 
-	if ((cptr->options & LISTENER_SSL) && ctx_server)
+	if ((listener->options & LISTENER_SSL) && ctx_server)
 	{
-		SSL_CTX *ctx = cptr->ssl_ctx ? cptr->ssl_ctx : ctx_server;
+		SSL_CTX *ctx = listener->ssl_ctx ? listener->ssl_ctx : ctx_server;
 
 		if (ctx)
 		{
